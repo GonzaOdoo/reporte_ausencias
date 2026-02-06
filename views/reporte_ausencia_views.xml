@@ -1,0 +1,136 @@
+<odoo>
+    <record id="view_hr_unjustified_absence_wizard_form" model="ir.ui.view">
+        <field name="name">hr.unjustified.absence.wizard.form</field>
+        <field name="model">hr.unjustified.absence.wizard</field>
+        <field name="arch" type="xml">
+            <form string="Ausencias Injustificadas">
+                <header>
+                    <button name="action_calculate_absences" string="Verificar" type="object"/>
+                </header>
+                <sheet>
+                    <!-- Selector de período rápido -->
+                    <div class="row mb-3">
+                        <div class="col-md-3">
+                            <field name="period_type" widget="radio"/>
+                        </div>
+                        <div class="col-md-3" invisible="period_type != 'month'">
+                            <field name="month" class="oe_inline"/>
+                        </div>
+                        <div class="col-md-2">
+                            <field name="year" class="oe_inline"/>
+                        </div>
+                        <div class="col-md-3" invisible="period_type != 'fortnight'">
+                            <field name="fortnight" class="oe_inline"/>
+                        </div>
+                    </div>
+                    
+                    <!-- Fechas calculadas (solo lectura) -->
+                    <div class="alert alert-info mb-4">
+                        <strong>Período seleccionado:</strong> 
+                        <field name="date_from" class="oe_inline fw-bold" readonly="1"/> 
+                        a 
+                        <field name="date_to" class="oe_inline fw-bold" readonly="1"/>
+                    </div>
+                    
+                    <!-- Filtros adicionales -->
+                    <group>
+                        <group>
+                            <field name="employee_ids" widget="many2many_tags" options="{'no_create': True}" domain="[('active', '=', True), ('resource_id', '!=', False)]"/>
+                        </group>
+                    </group>
+                    
+                    <!-- Estadísticas (solo visible cuando hay ausencias) -->
+                    <div class="row mb-3" invisible="not line_ids">
+                        <div class="col-md-4">
+                            <div class="card text-white bg-danger mb-3">
+                                <div class="card-body">
+                                    <h5 class="card-title">Total ausencias</h5>
+                                    <p class="card-text display-4">
+                                        <field name="total_absences" readonly="1"/>
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="card text-white bg-warning mb-3">
+                                <div class="card-body">
+                                    <h5 class="card-title">Empleados afectados</h5>
+                                    <p class="card-text display-4">
+                                        <field name="total_employees" readonly="1"/>
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Lista de ausencias (solo visible cuando hay ausencias) -->
+                    <field name="line_ids" nolabel="1" readonly="1" invisible="not line_ids">
+                        <list create="false" delete="false" default_order="absence_date asc">
+                            <field name="absence_date" string="Fecha"/>
+                            <field name="employee_id" string="Empleado"/>
+                            <field name="employee_identification_id" string="C.I." optional="show"/>
+                            <field name="department_id" string="Departamento" optional="show"/>
+                            <field name="job_title" string="Puesto" optional="hide"/>
+                            <field name="contract_start" string="Inicio contrato" optional="hide"/>
+                            <field name="contract_end" string="Fin contrato" optional="hide"/>
+                            <button 
+                                name="action_create_leave_request" 
+                                type="object" 
+                                string="Justificar" 
+                                icon="fa-plus-circle" 
+                                class="btn-primary btn-sm"/>
+                        </list>
+                    </field>
+                    
+                    <!-- Mensaje cuando no hay ausencias -->
+                    <div class="alert alert-success text-center py-4" invisible="line_ids">
+                        <h4 class="mb-3">
+                            <i class="fa fa-check-circle fa-3x text-success mb-3"/>
+                            <br/>
+                            No se encontraron ausencias injustificadas en el período seleccionado.
+                        </h4>
+                        <p class="text-muted">
+                            Todos los días laborables dentro de la vigencia del contrato tienen registro de trabajo.
+                        </p>
+                    </div>
+                </sheet>
+                
+                <!-- Botones siempre visibles en footer -->
+                <footer class="o_form_buttons_footer">
+                    <button 
+                        name="action_calculate_absences" 
+                        type="object" 
+                        string="Actualizar" 
+                        class="btn-primary"
+                        icon="fa-refresh"/>
+                    <button 
+                        name="action_reset" 
+                        type="object" 
+                        string="Limpiar" 
+                        class="btn-secondary"/>
+                    <button 
+                        special="cancel" 
+                        string="Cerrar" 
+                        class="btn-link"/>
+                </footer>
+            </form>
+        </field>
+    </record>
+
+    <!-- Acción para abrir directamente -->
+    <record id="action_hr_unjustified_absence_wizard_auto" model="ir.actions.act_window">
+        <field name="name">Verificar Ausencias Injustificadas</field>
+        <field name="res_model">hr.unjustified.absence.wizard</field>
+        <field name="view_mode">form</field>
+        <field name="target">current</field>
+    </record>
+
+    <!-- Menú -->
+    <menuitem 
+        id="menu_hr_unjustified_absence_verification" 
+        name="Verificar Ausencias" 
+        parent="hr_attendance.menu_hr_attendance_root"
+        action="action_hr_unjustified_absence_wizard_auto"
+        sequence="45"
+        groups="hr.group_hr_user"/>
+</odoo>
