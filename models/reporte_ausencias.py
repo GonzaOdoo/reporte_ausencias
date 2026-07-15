@@ -34,8 +34,13 @@ class HrUnjustifiedAbsenceWizard(models.TransientModel):
     ], string='Quincena', default='first')
     
     # ✅ CORRECCIÓN: Quitar required=True (son calculados y readonly)
-    date_from = fields.Date(string='Fecha Desde', readonly=True, compute='_compute_dates', store=True)
-    date_to = fields.Date(string='Fecha Hasta', readonly=True, compute='_compute_dates', store=True)
+    date_from = fields.Date(
+        string='Fecha Desde'
+    )
+    
+    date_to = fields.Date(
+        string='Fecha Hasta'
+    )
     
     # ✅ CORRECCIÓN: Empleados vacíos por defecto (el usuario decide si filtrar)
     employee_ids = fields.Many2many(
@@ -55,6 +60,74 @@ class HrUnjustifiedAbsenceWizard(models.TransientModel):
     total_employees = fields.Integer('Empleados con Ausencias', compute='_compute_stats')
 
     @api.model
+    def default_get(self, fields_list):
+        res = super().default_get(fields_list)
+    
+        today = fields.Date.today()
+    
+        month = today.month
+        year = today.year
+    
+        if month == 1:
+            prev_month = 12
+            prev_year = year - 1
+        else:
+            prev_month = month - 1
+            prev_year = year
+    
+        res.update({
+            'date_from': fields.Date.to_date(
+                f'{prev_year}-{prev_month:02d}-21'
+            ),
+            'date_to': fields.Date.to_date(
+                f'{year}-{month:02d}-20'
+            ),
+        })
+    
+        return res
+
+
+    @api.onchange('period_type', 'month', 'year', 'fortnight')
+    def _onchange_dates(self):
+        for wizard in self:
+            if wizard.period_type == 'custom':
+                return
+    
+            if not wizard.month or not wizard.year:
+                return
+    
+            month_int = int(wizard.month)
+    
+            if wizard.period_type == 'month':
+                # 21 del mes anterior al 20 del actual
+                if month_int == 1:
+                    prev_month = 12
+                    prev_year = wizard.year - 1
+                else:
+                    prev_month = month_int - 1
+                    prev_year = wizard.year
+    
+                wizard.date_from = fields.Date.to_date(
+                    f'{prev_year}-{prev_month:02d}-21'
+                )
+                wizard.date_to = fields.Date.to_date(
+                    f'{wizard.year}-{month_int:02d}-20'
+                )
+    
+            elif wizard.period_type == 'fortnight':
+                base_date = fields.Date.to_date(
+                    f'{wizard.year}-{month_int:02d}-01'
+                )
+    
+                if wizard.fortnight == 'first':
+                    wizard.date_from = base_date
+                    wizard.date_to = base_date.replace(day=15)
+                else:
+                    wizard.date_from = base_date.replace(day=16)
+                    next_month = base_date + relativedelta(months=1)
+                    wizard.date_to = next_month - timedelta(days=1)
+
+    @api.model
     def _get_month_selection(self):
         months = [
             ('1', 'Enero'), ('2', 'Febrero'), ('3', 'Marzo'), ('4', 'Abril'),
@@ -66,6 +139,9 @@ class HrUnjustifiedAbsenceWizard(models.TransientModel):
     @api.depends('period_type', 'month', 'year', 'fortnight')
     def _compute_dates(self):
         for wizard in self:
+            if wizard.period_type == 'custom':
+                # No modificar fechas ingresadas manualmente
+                continue
             if wizard.period_type == 'month':
                 # Período nómina: 21 del mes anterior al 20 del mes actual (inclusive)
                 month_int = int(wizard.month)
@@ -154,20 +230,39 @@ class HrUnjustifiedAbsenceWizard(models.TransientModel):
             
             workable_dates = set()
             for start, stop, _ in att_intervals:
-                d = start.date()
-                while d <= stop.date():
-                    if effective_start <= fields.Date.from_string(str(d)) <= effective_end:
-                        workable_dates.add(d)
-                    d += timedelta(days=1)
+                start_date = start.date()
+                end_date = min(stop.date(), self.date_to)
             
+                d = start_date
+                while d <= end_date:
+                    workable_dates.add(d)
+                    d += timedelta(days=1)
+                            
             if not workable_dates:
                 continue
+            holidays = self.env['resource.calendar.leaves'].search([
+                ('resource_id', '=', False),
+                ('date_from', '<=', local_to.astimezone(pytz.UTC).replace(tzinfo=None)),
+                ('date_to', '>=', local_from.astimezone(pytz.UTC).replace(tzinfo=None)),
+            ])
+            holiday_dates = set()
             
+            for leave in holidays:
+                start = pytz.utc.localize(leave.date_from).astimezone(tz_py).date()
+                stop = pytz.utc.localize(leave.date_to).astimezone(tz_py).date()
+            
+                d = start
+                while d <= stop:
+                    holiday_dates.add(d)
+                    d += timedelta(days=1)
+            _logger.info("Feriados")
+            _logger.info(holiday_dates)
+            workable_dates -= holiday_dates
             work_entries = self.env['hr.work.entry'].search([
                 ('employee_id', '=', employee.id),
                 ('active', '=', True),
                 ('date_stop', '>=', fields.Datetime.to_datetime(effective_start)),
-                ('date_start', '<=', fields.Datetime.to_datetime(effective_end)),
+                ('date_start', '<=', fields.Datetime.to_datetime(effective_end) + timedelta(days=1)),
             ])
             
             covered_dates = set()
@@ -182,7 +277,10 @@ class HrUnjustifiedAbsenceWizard(models.TransientModel):
                     if effective_start <= fields.Date.from_string(str(d)) <= effective_end:
                         covered_dates.add(d)
                     d += timedelta(days=1)
-            
+            _logger.info("Fechas laborables")
+            _logger.info(workable_dates)
+            _logger.info("Fechas cubiertas")
+            _logger.info(covered_dates)
             unjustified_dates = workable_dates - covered_dates
             
             for absence_date in sorted(unjustified_dates):
@@ -248,36 +346,23 @@ class HrUnjustifiedAbsenceLine(models.TransientModel):
     )
 
     def action_create_leave_request(self):
-        """Crear solicitud de ausencia para justificar esta fecha"""
         self.ensure_one()
+    
         leave_type = self.env['hr.leave.type'].search([
-            ('code', '=', 'UNJUSTIFIED'),
             ('active', '=', True)
         ], limit=1)
-        
-        if not leave_type:
-            leave_type = self.env['hr.leave.type'].search([
-                ('requires_allocation', '=', 'no'),
-                ('time_type', '=', 'leave'),
-                ('active', '=', True)
-            ], limit=1)
-        
-        if not leave_type:
-            raise UserError(_('No se encontró un tipo de ausencia adecuado. Cree uno con código "UNJUSTIFIED" o active un tipo de ausencia sin asignación.'))
-        
-        leave = self.env['hr.leave'].create({
-            'employee_id': self.employee_id.id,
-            'holiday_status_id': leave_type.id,
-            'request_date_from': self.absence_date,
-            'request_date_to': self.absence_date,
-            'number_of_days': 1.0,
-            'name': f'Ausencia injustificada {self.absence_date} - Corregido',
-        })
-        
+    
         return {
             'type': 'ir.actions.act_window',
+            'name': _('Nueva Solicitud'),
             'res_model': 'hr.leave',
-            'res_id': leave.id,
             'view_mode': 'form',
             'target': 'current',
+            'context': {
+                'default_employee_id': self.employee_id.id,
+                'default_holiday_status_id': leave_type.id if leave_type else False,
+                'default_request_date_from': self.absence_date,
+                'default_request_date_to': self.absence_date,
+                'default_name': f'Justificación ausencia {self.absence_date}',
+            }
         }
